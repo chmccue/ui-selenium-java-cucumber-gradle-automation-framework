@@ -7,5 +7,5 @@ env.sh
 src/.DS_Store
 .idea/
 out/
-.DS_Store
 *.iml
+.DS_Store
