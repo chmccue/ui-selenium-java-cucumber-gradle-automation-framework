@@ -1,6 +1,7 @@
-# Test Automation Framework (V1.0)
+# Test Automation Framework
+NOTE: this framework is no longer maintained to a specific site; it is only for demonstration purposes.
 
-> UI Test Automation built in Java with SeleniumWebDriver, Junit, Cucumber using Gradle.
+> UI Test Automation built in Java with Selenium WebDriver, Junit, Cucumber, Gradle.
 
 **Supports:** MacOSX, Linux, Windows.
 
@@ -15,6 +16,9 @@ Install the following requirements with their respective versions:
 All other dependencies are defined in `build.gradle` and are automatically loaded.
 
 ## Configuration
+
+NOTE on Selenium: Selenium drivers are entirely maintained in this framework and the latest driver/browser versions 
+are automatically configured when needed. There is no need to install or configure Selenium externally on a system.
 
 Create `.env` file from provided `.env_template` and edit with your desired configuration / credentials:
 
@@ -31,11 +35,8 @@ Also, additional and more advanced settings can be configured in the `gradle.pro
 * `GRADLEW_RUN_PARAMS`: Parameters passed to gradle to run test task. Example: `runChromeTest --info`. You can also pass in more complex
 commands to alter the default test runner parameters, such as `runChromeTest --info -Dcourgette.runLevel=SCENARIO`
 * `SELENIUM_BROWSER_TYPE`: Browser that should be used to run the tests. Possible values: 
-`chrome`, `chromeHeadless`, `firefox`, `firefoxHeadless`, `safari`, `MicrosoftEdge`, `iexplore`.
+`chrome`, `chromeHeadless`, `firefox`, `firefoxHeadless`.
 Note that only chrome and firefox are currently stable and maintained.
-* `SELENIUM_BROWSER_VERSION`: Browser version that goes with browser type. If running with gradle test task,
-this is set up by default for chrome and firefox, so can be left blank in gitlab-ci and environment vars.
-If running in junit through the feature file runner, this must be set manually.
 * `SELENIUM_DRIVER_TYPE`: Defines if tests should be run with `remote` web driver (i.e.: running with docker, with or without grid/hub)
 or with `local` executable browser driver (i.e.: `chromedriver`, `geckodriver`). Values: `remote` or `local`.
 * `SELENIUM_REMOTE_URL`: When `SELENIUM_DRIVER_TYPE` is `remote`, Docker automatically defines the following value: `http://selenium-hub:4444/wd/hub`.
@@ -44,8 +45,6 @@ If `SELENIUM_DRIVER_TYPE` is `local`, then this variable can be empty.
 * `USER_PROVISIONING_ENVIRONMENT`: Environment name used as base path in User Provisioner KV System to store/retrieve user data.
 * `USER_PROVISIONING_RETRY_LOCK`: If `true` and User Provisioning System fails to find an available user, it will wait 30 seconds and retry again.
 If it fails again, a RuntimeException is raised. When `false`, the exception will be raised the first time the provisioner fails to find an available user.
-* `SELENIUM_MAX_WAIT_SECONDS_FOR_ELEMENT`: Optional argument: defines maximum number of seconds selenium web driver waits for a DOM element to meet
-certain conditions, like: be clickable, visible, etc. If variable is not defined, then tests use wait values programmed within the framework.
 * `CUCUMBER_TAGS`: Optional argument: Ability to add custom tag expressions to overwrite default test runner tags.
 Currently only works when running in Docker. Example value: `(@navigation or @login) and not @ignore`
 For more details on tag expressions, see: https://github.com/cucumber/cucumber/tree/master/tag-expressions
@@ -54,7 +53,9 @@ View `docker/start.sh` file to see the default values that get set when running 
 
 ## Usage
 
-### Running locally with a browser driver through Gradle
+### Running tests locally
+
+There are multiple ways to run the tests locally.
 
 First modify the `.env` file:
 ```bash
@@ -64,17 +65,21 @@ USER_PROVISIONING_SERVER_URL=<enter correct value>
 USER_PROVISIONING_ENVIRONMENT=uat-dev
 ```
 
-Then for Chrome or Firefox, run one of the following:
+After the `.env` file is set up, the easiest way to run the tests is via the preconfigured bash script `localscripts/runLocal.sh`.
+
+#### Running directly with gradle
+
+If you'd prefer to run via gradle commands instead of the preconfigured bash script above, then run one of the following:
 ```bash
 ./gradlew runChromeTest --info
 
 ./gradlew runFirefoxTest --info
 ```
 
-Alternatively, if using an IDE such as intellij, you can run outside terminal: open build.gradle file, select "run" option along left side of test task.
+Alternatively, if using an IDE such as Intellij, you can run outside terminal: open build.gradle file, select "run" option along left side of test task.
 
 If you want to run only specific cucumber tags tests:
-* If running in docker, all you need to do is add a custom tag expression to CUCUMBER_TAGS variable in your .env file:
+* If running in docker, you can add a custom tag expression to CUCUMBER_TAGS variable in your .env file:
 ```bash
 CUCUMBER_TAGS=(@navigation or @login) and not @ignore
 ```
@@ -119,8 +124,7 @@ The CSV file must contain in the first line the column names, which could be one
     - other
 
 One corner case occurs when the value of a given column of the CSV is the string 'null', in which
-case it will be stored as ac actual null object. This allow developers to have some users within
-Provisioner with unknown values.
+case it will be stored as ac actual null object. This allows developers to have users with unknown values.
 
 ### Running with [docker-compose](https://docs.docker.com/compose/) and Selenium Standalone
 
@@ -146,10 +150,15 @@ docker-compose up --build company-uat
 ### Running with [docker-compose](https://docs.docker.com/compose/) and Selenium Grid
 
 #### For Chrome
-Run:
+
+Running a single node:
 ```bash
-Running a single node: docker-compose up --detach selenium-hub node-chrome
-Scale to more than 1 node: docker-compose up --detach --scale node-chrome=<scale number> --no-recreate node-chrome
+docker-compose up --detach selenium-hub node-chrome
+```
+
+Scale to more than 1 node:
+```bash
+docker-compose up --detach --scale node-chrome=<scale number> --no-recreate node-chrome
 docker-compose up --build company-uat
 ```
 
@@ -159,14 +168,18 @@ First modify the `.env` file:
 SELENIUM_BROWSER_TYPE=firefox
 ```
 
-Then run:
+Running a single node:
 ```bash
-Running a single node: docker-compose up --detach selenium-hub node-firefox
-Scale to more than 1 node: docker-compose up --detach --scale node-firefox=<scale number> --no-recreate node-firefox
+docker-compose up --detach selenium-hub node-firefox
+```
+
+Scale to more than 1 node:
+```bash
+docker-compose up --detach --scale node-firefox=<scale number> --no-recreate node-firefox
 docker-compose up --build company-uat
 ```
 
-#### @Before and @After setups/teardowns (last updated 2/27/2019)
+#### @Before and @After setups/teardowns
 
 - Setups (`@Before`) execute basic set up steps such as reporting and browser initialization. Most
   scenario set up details are handled by feature file `Background` steps, as they are better
