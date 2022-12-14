@@ -1,0 +1,75 @@
+version: '3.7'
+services:
+  company-uat:
+    container_name: company-uat
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    user: root
+    # network_mode: host
+    volumes:
+      - ./build:/home/gradle/build
+
+  selenium-hub:
+    container_name: selenium-hub
+    image: selenium/hub:latest
+    restart: unless-stopped
+    ports:
+      - "4444:4444"
+    environment:
+      SE_OPTS: "-debug"
+      GRID_MAX_SESSION: 40
+      GRID_MAX_INSTANCES: 40
+
+  node-chrome:
+    image: selenium/node-chrome:latest
+    restart: unless-stopped
+    depends_on:
+      - selenium-hub
+    environment:
+      NODE_MAX_INSTANCES: 1
+      NODE_MAX_SESSION: 1
+      HUB_HOST: "selenium-hub"
+      HUB_PORT: "4444"
+      START_XVFB: "true"
+      # Leave SE_OPTS commented out below in case it's needed again.
+      # Allows ability to pass in unique configuration to Chrome node.
+      #SE_OPTS: "-browser browserName=chrome,version=78.0.3904.87,maxInstances=4"
+    shm_size: 2g
+    volumes:
+      - ./src/test/resources/uploadTestFiles:/dockerUploadTestFiles
+
+  node-firefox:
+    image: selenium/node-firefox:latest
+    restart: unless-stopped
+    depends_on:
+      - selenium-hub
+    environment:
+      NODE_MAX_INSTANCES: 1
+      NODE_MAX_SESSION: 1
+      HUB_HOST: "selenium-hub"
+      HUB_PORT: "4444"
+    shm_size: 2g
+    volumes:
+      - ./src/test/resources/uploadTestFiles:/dockerUploadTestFiles
+
+  selenium-chrome:
+    container_name: selenium-chrome
+    image: selenium/standalone-chrome:latest
+    restart: unless-stopped
+    ports:
+      - "4444:4444"
+    volumes:
+      - /dev/shm:/dev/shm
+      - ./src/test/resources/uploadTestFiles:/dockerUploadTestFiles
+
+  selenium-firefox:
+    container_name: selenium-firefox
+    image: selenium/standalone-firefox:latest
+    restart: unless-stopped
+    ports:
+      - "4444:4444"
+    volumes:
+      - /dev/shm:/dev/shm
+      - ./src/test/resources/uploadTestFiles:/dockerUploadTestFiles

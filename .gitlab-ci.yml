@@ -1,0 +1,265 @@
+stages:
+  - lint
+  - test
+  - reports
+
+variables:
+  DOCKER_DRIVER: "overlay2"
+  GRADLE_UAT_PATH: "/home/gradle"
+  BRANCH_REVIEW_URL: "http://dev-url-${CI_COMMIT_REF_SLUG}.dev"
+
+include:
+  - project: "automation/ci-tools"
+    ref: master
+    file: "ci-templates/gitlab-ci-ssh-key.yml"
+
+lint:
+  stage: lint
+  image: gradle:6.5.0-jdk11
+  except:
+    variables:
+      - $UAT_LINT_OFF == "true"
+  script:
+    - ./gradlew checkstyleTest
+
+.test-with-external-selenium-grid:
+  image: gradle:6.5.0-jdk11
+  tags:
+    - docker
+  script:
+    - if [[ -z "${SITE_URL}" ]]; then
+      export SITE_URL=${BRANCH_REVIEW_URL};
+      fi;
+    - echo "Site URL ${SITE_URL}"
+    - echo "Starting gradlew ${GRADLEW_RUN_PARAMS} ${CUCUMBER_TAGS}"
+    - cp -R ./* ${GRADLE_UAT_PATH}/
+    - cd ${GRADLE_UAT_PATH}
+    - gradle wrapper
+    - ./gradlew :compileJava --refresh-dependencies
+    - ./start.sh
+  after_script:
+    - mkdir -p ./logs ./build
+    - cat ${GRADLE_UAT_PATH}/build/logs/*.log > ./logs/uat.log || true
+    - mv ${GRADLE_UAT_PATH}/build/chrome ./build/chrome || true
+    - mv ${GRADLE_UAT_PATH}/build/firefox ./build/firefox || true
+    - cp ${GRADLE_UAT_PATH}/build/pending_release_users.json ./build/ || true
+    - if [[ -s "./build/pending_release_users.json" ]]; then
+        cd ${GRADLE_UAT_PATH};
+        GRADLEW_RUN_PARAMS=releasePendingConsulUsers ./start.sh || true;
+      fi;
+    - rm -rf ${GRADLE_UAT_PATH}/*
+  artifacts:
+    name: $CI_JOB_STAGE-$CI_COMMIT_REF_NAME
+    expire_in: 5 days
+    when: always
+    paths:
+      - logs/
+      - build/chrome/
+      - build/firefox/
+      - build/pending_release_users.json
+
+.test-with-selenium-grid: &test-with-selenium-grid
+  image: ${GITLAB_DOCKER_REGISTRY_DOMAIN}/automation/dev_docker/docker-compose/19
+  tags:
+    - docker
+  services:
+    - docker:19-dind
+  script:
+    - if [[ -z "${SITE_URL}" ]]; then
+      export SITE_URL=${BRANCH_REVIEW_URL};
+      fi;
+    - export SELENIUM_REMOTE_URL="http://selenium-hub:4444/wd/hub"
+    - if [[ -z "${NODE_COUNT}" ]]; then
+        export NODE_COUNT=3;
+      fi;
+    - echo "Site URL ${SITE_URL}"
+    - echo "Selenium Hub ${SELENIUM_REMOTE_URL}"
+    - echo "Selenium Node ${DOCKER_COMPOSE_SELENIUM_NODE}"
+    - echo "Selenium Node Count ${NODE_COUNT}"
+    # Clean multiline variables as they are not accepted on .env files on the Docker v19 image
+    - export CI_SSH_KEY="" DOCKER_ENV_CI_SERVER_TLS_CA_FILE=""
+    - env > .env
+    - docker-compose rm -v -f
+    - if [[ "${SELENIUM_BROWSER_TYPE}" =~ firefox ]]; then
+      echo "slight delay for Firefox so parallel set up time has a slight variance";
+      sleep 5;
+      fi;
+    - docker-compose up --detach selenium-hub
+    - sleep 2
+    - docker-compose up --detach --scale ${DOCKER_COMPOSE_SELENIUM_NODE}=${NODE_COUNT} --no-recreate ${DOCKER_COMPOSE_SELENIUM_NODE}
+    - export DOCKER_COMPOSE_SELENIUM_NODE=company-uat_${DOCKER_COMPOSE_SELENIUM_NODE}
+    - sleep 2
+    - if [[ "${SITE_URL}" =~ ^.+\.dev$ ]]; then
+        echo "Running against a dev app running on Bardock";
+        export SITE_BASENAME=$(basename "${SITE_URL}");
+        echo "$BARDOCK_IP $SITE_BASENAME" >> /etc/hosts;
+        for num in $(seq 1 $NODE_COUNT); do
+          echo "Adding node container to hosts file - ${DOCKER_COMPOSE_SELENIUM_NODE}_$num";
+          docker exec --user root -e SITE_BASENAME=$SITE_BASENAME -e BARDOCK_IP=$BARDOCK_IP ${DOCKER_COMPOSE_SELENIUM_NODE}_$num bash -c 'echo "$BARDOCK_IP $SITE_BASENAME" >> /etc/hosts';
+        done;
+      fi;
+    - rm -rf ./build
+    - docker-compose up --build --force-recreate --exit-code-from company-uat company-uat
+  after_script:
+    - mkdir -p logs/
+    - cat ./build/logs/*.log > logs/${DOCKER_COMPOSE_SELENIUM_NODE}.log
+    - docker logs ${DOCKER_COMPOSE_SELENIUM_NODE} >> ./logs/${DOCKER_COMPOSE_SELENIUM_NODE}.log 2>&1
+    - docker logs selenium-hub > ./logs/selenium-hub.log 2>&1
+    - docker logs company-uat > ./logs/company-uat.log 2>&1
+    - docker-compose stop
+    - if [[ -f "./build/pending_release_users.json" ]]; then
+        export GRADLEW_RUN_PARAMS="releasePendingConsulUsers";
+        docker-compose up --exit-code-from company-uat company-uat || true;
+      fi;
+    - docker-compose rm -v -f
+  artifacts:
+    name: $CI_JOB_STAGE-$CI_COMMIT_REF_NAME
+    expire_in: 8 days
+    when: always
+    paths:
+      - logs/
+      - build/chrome/
+      - build/firefox/
+      - build/pending_release_users.json
+
+test-with-chrome:
+  <<: *test-with-selenium-grid
+  stage: test
+  allow_failure: true
+  except: &except-uat-chrome
+    variables:
+      - $DISABLE_CHROME == "true"
+  variables:
+    SELENIUM_BROWSER_TYPE: "chrome"
+    DOCKER_COMPOSE_SELENIUM_NODE: "node-chrome"
+
+test-with-firefox:
+  <<: *test-with-selenium-grid
+  stage: test
+  allow_failure: true
+  except: &except-uat-firefox
+    variables:
+      - $DISABLE_FIREFOX == "true"
+  before_script:
+    - export SELENIUM_BROWSER_TYPE="firefox" # needs to be set here to override chrome default.
+  variables:
+    DOCKER_COMPOSE_SELENIUM_NODE: "node-firefox"
+
+.start-static-review: &start-static-review
+  stage: reports
+  image: ${GITLAB_DOCKER_REGISTRY_DOMAIN}/automation/dev_docker/dev-apps-static/1
+  when: always
+  allow_failure: true
+  variables:
+    GIT_STRATEGY: none
+    REVIEW_NAME: ""
+    DEP_JOB_NAME: ""
+    REVIEW_SOURCE_PATH: ""
+    REVIEW_DEST_FOLDER: ""
+  script:
+    - if [[ -z "${REVIEW_S3_BUCKET_NAME}" ]]; then
+        echo "Missing environment variable REVIEW_S3_BUCKET_NAME";
+        exit 1;
+      fi;
+    - if [[ -z "${REVIEW_NAME}" ]]; then
+        echo "Missing environment variable REVIEW_NAME";
+        exit 1;
+      fi;
+    - if [[ -z "${REVIEW_SOURCE_PATH}" ]]; then
+        echo "Missing environment variable REVIEW_SOURCE_PATH";
+        exit 1;
+      fi;
+    - if [[ -z "${REVIEW_DEST_FOLDER}" ]]; then
+        echo "Missing environment variable REVIEW_DEST_FOLDER";
+        exit 1;
+      fi;
+    - ls -la
+    - if [ ! -d "${REVIEW_SOURCE_PATH}" ]; then
+        echo "The required directory \"${REVIEW_SOURCE_PATH}\" is missing.";
+        echo "Please check the logs for the \"${DEP_JOB_NAME}\" job.";
+        exit 1;
+      fi;
+    - ls -la "${REVIEW_SOURCE_PATH}"
+    - AWS_ACCESS_KEY_ID="${DEV1_AWS_ACCESS_KEY_ID}"
+    - AWS_SECRET_ACCESS_KEY="${DEV1_AWS_SECRET_ACCESS_KEY}"
+    - aws s3 ls "s3://${REVIEW_S3_BUCKET_NAME}/${CI_PROJECT_PATH_SLUG}" || true
+    - aws s3 rm "s3://${REVIEW_S3_BUCKET_NAME}/${CI_PROJECT_PATH_SLUG}/${CI_COMMIT_REF_SLUG}/${REVIEW_DEST_FOLDER}/" || true
+    - aws s3 sync "${REVIEW_SOURCE_PATH}/" "s3://${REVIEW_S3_BUCKET_NAME}/${CI_PROJECT_PATH_SLUG}/${CI_COMMIT_REF_SLUG}/${REVIEW_DEST_FOLDER}/"
+  environment: &start-static-review-env
+    name: review/${REVIEW_NAME}/${CI_COMMIT_REF_SLUG}
+    url: "${DEV1_BASE_URL}/${CI_PROJECT_PATH_SLUG}/${CI_COMMIT_REF_SLUG}/${REVIEW_DEST_FOLDER}/index.html"
+    on_stop: ""
+
+.stop-static-review: &stop-static-review
+  stage: reports
+  image: ${GITLAB_DOCKER_REGISTRY_DOMAIN}/automation/dev_docker/dev-apps-static/1
+  needs: []
+  variables:
+    GIT_STRATEGY: none
+    REVIEW_NAME: ""
+    REVIEW_DEST_FOLDER: ""
+  script:
+    - if [[ -z "${REVIEW_S3_BUCKET_NAME}" ]]; then
+        echo "Missing environment variable REVIEW_S3_BUCKET_NAME";
+        exit 1;
+      fi;
+    - if [[ -z "${REVIEW_NAME}" ]]; then
+        echo "Missing environment variable REVIEW_NAME";
+        exit 1;
+      fi;
+    - if [[ -z "${REVIEW_DEST_FOLDER}" ]]; then
+        echo "Missing environment variable REVIEW_DEST_FOLDER";
+        exit 1;
+      fi;
+    - AWS_ACCESS_KEY_ID="${DEV1_AWS_ACCESS_KEY_ID}"
+    - AWS_SECRET_ACCESS_KEY="${DEV1_AWS_SECRET_ACCESS_KEY}"
+    - aws s3 ls "s3://${REVIEW_S3_BUCKET_NAME}/${CI_PROJECT_PATH_SLUG}"
+    - aws s3 rm "s3://${REVIEW_S3_BUCKET_NAME}/${CI_PROJECT_PATH_SLUG}/${CI_COMMIT_REF_SLUG}/${REVIEW_DEST_FOLDER}/"
+  when: manual
+  environment:
+    name: review/${REVIEW_NAME}/${CI_COMMIT_REF_SLUG}
+    action: stop
+
+start-review-uat-report-chrome:
+  <<: *start-static-review
+  except: *except-uat-chrome
+  variables:
+    REVIEW_NAME: "uat-report-chrome"
+    DEP_JOB_NAME: "test-with-chrome"
+    REVIEW_SOURCE_PATH: "build/chrome/courgette-report"
+    REVIEW_DEST_FOLDER: "chrome/uat-report"
+  needs:
+    - test-with-chrome
+  environment:
+    <<: *start-static-review-env
+    on_stop: stop-review-uat-report-chrome
+    url: "${DEV1_BASE_URL}/${CI_PROJECT_PATH_SLUG}/${CI_COMMIT_REF_SLUG}/${REVIEW_DEST_FOLDER}/index.html"
+
+stop-review-uat-report-chrome:
+  <<: *stop-static-review
+  except: *except-uat-chrome
+  variables:
+    REVIEW_NAME: "uat-report-chrome"
+    REVIEW_DEST_FOLDER: "chrome/uat-report"
+
+start-review-uat-report-firefox:
+  <<: *start-static-review
+  except: *except-uat-firefox
+  variables:
+    REVIEW_NAME: "uat-report-firefox"
+    DEP_JOB_NAME: "test-with-firefox"
+    REVIEW_SOURCE_PATH: "build/firefox/courgette-report"
+    REVIEW_DEST_FOLDER: "firefox/uat-report"
+  needs:
+    - test-with-firefox
+  environment:
+    <<: *start-static-review-env
+    on_stop: stop-review-uat-report-firefox
+    url: "${DEV1_BASE_URL}/${CI_PROJECT_PATH_SLUG}/${CI_COMMIT_REF_SLUG}/${REVIEW_DEST_FOLDER}/index.html"
+
+stop-review-uat-report-firefox:
+  <<: *stop-static-review
+  except: *except-uat-firefox
+  variables:
+    REVIEW_NAME: "uat-report-firefox"
+    REVIEW_DEST_FOLDER: "firefox/uat-report"

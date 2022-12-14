@@ -1,0 +1,72 @@
+apply plugin: 'java'
+apply plugin: 'checkstyle'
+
+compileJava {
+  sourceCompatibility = 11
+  targetCompatibility = 11
+}
+
+repositories {
+  mavenCentral()
+}
+
+dependencies {
+    implementation 'com.google.code.gson:gson:2.8.6'
+    implementation 'org.seleniumhq.selenium:selenium-java:4.6.0'
+    implementation 'io.github.prashant-ramcharan:courgette-jvm:6.8.0'
+    implementation 'org.apache.logging.log4j:log4j-core:2.19.0'
+    implementation 'io.github.bonigarcia:webdrivermanager:5.3.1'
+    implementation 'com.aventstack:extentreports:5.0.7'
+    implementation 'org.slf4j:slf4j-api:1.7.30'
+    implementation 'org.slf4j:slf4j-simple:1.7.30'
+    implementation 'org.apache.commons:commons-csv:1.8'
+    //implementation 'commons-io:commons-io:2.8.0'
+    //implementation 'org.freemarker:freemarker:2.3.28'
+    implementation 'com.ecwid.consul:consul-api:1.4.5'
+    implementation 'com.bettercloud:vault-java-driver:5.1.0'
+    implementation 'org.jboss.aerogear:aerogear-otp-java:1.0.0'
+}
+
+tasks.withType(Test) {
+  systemProperties = System.getProperties() as Map<String, ?>
+  systemProperties.remove("java.endorsed.dirs") // needs to be removed from Java 9
+  // Adds `.env` environment vars file to run directly in gradle, if file exists.
+  if (file('.env').exists()) {
+    file('.env').readLines().each() {
+      def (key, value) = it.tokenize('=')
+      environment key, value
+    }
+  }
+}
+
+task runChromeTest(type: Test) {
+  if (environment.get("SELENIUM_DRIVER_TYPE") == "local") {
+    environment "SELENIUM_BROWSER_TYPE", "chrome"
+  } else {
+    environment "SELENIUM_BROWSER_TYPE", "chromeHeadless"
+  }
+  include '**/suites/ChromeTestSuite.class'
+  outputs.upToDateWhen { false }
+}
+
+task runFirefoxTest(type: Test) {
+    if (environment.get("SELENIUM_DRIVER_TYPE") == "local") {
+      environment "SELENIUM_BROWSER_TYPE", "firefox"
+    } else {
+      environment "SELENIUM_BROWSER_TYPE", "firefoxHeadless"
+    }
+  include '**/suites/FirefoxTestSuite.class'
+  outputs.upToDateWhen { false }
+}
+
+task(releasePendingConsulUsers, dependsOn: 'classes', type: JavaExec) {
+  main = 'main.UserProvisioner'
+  classpath = sourceSets.main.runtimeClasspath
+  args "release_pending_consul_users"
+}
+
+task(uploadUsersToConsul, dependsOn: 'classes', type: JavaExec) {
+  main = 'main.UserProvisioner'
+  classpath = sourceSets.main.runtimeClasspath
+  args "upload_users_to_consul"
+}
